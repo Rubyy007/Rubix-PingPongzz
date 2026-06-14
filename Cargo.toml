@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+
+members = [
+    "apps/desktop",
+
+    "crates/domain",
+    "crates/application",
+    "crates/networking",
+    "crates/security",
+    "crates/persistence",
+    "crates/ui",
+    "crates/notifications",
+]
