@@ -1,0 +1,19 @@
+﻿[package]
+name = "rubix-ui"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "egui-based user interface"
+
+[dependencies]
+rubix-domain = { path = "../domain" }
+rubix-application = { path = "../application" }
+eframe = { workspace = true }
+egui = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }

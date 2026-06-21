@@ -1,0 +1,22 @@
+﻿[package]
+name = "rubix-application"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Application use cases and DTOs"
+
+[dependencies]
+rubix-domain = { path = "../domain" }
+rubix-security = { path = "../security" }
+rubix-networking = { path = "../networking" }
+rubix-persistence = { path = "../persistence" }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }

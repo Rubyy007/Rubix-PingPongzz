@@ -1,0 +1,23 @@
+﻿[package]
+name = "rubix-networking"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "TCP, UDP, mDNS networking layer"
+
+[dependencies]
+rubix-domain = { path = "../domain" }
+rubix-security = { path = "../security" }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+mdns-sd = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }

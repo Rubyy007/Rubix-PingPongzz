@@ -1,0 +1,22 @@
+﻿[package]
+name = "rubix-desktop"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Rubix-PingPongzz desktop application"
+
+[[bin]]
+name = "rubix-pingpongzz"
+path = "src/main.rs"
+
+[dependencies]
+rubix-domain = { path = "../../crates/domain" }
+rubix-application = { path = "../../crates/application" }
+rubix-ui = { path = "../../crates/ui" }
+rubix-notifications = { path = "../../crates/notifications" }
+eframe = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
