@@ -5,18 +5,44 @@ authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Rubix-PingPongzz desktop application"
+description = "Desktop application for Rubix-PingPongzz"
 
 [[bin]]
-name = "rubix-pingpongzz"
+name = "rubix-desktop"
 path = "src/main.rs"
 
 [dependencies]
-rubix-domain = { path = "../../crates/domain" }
-rubix-application = { path = "../../crates/application" }
-rubix-ui = { path = "../../crates/ui" }
-rubix-notifications = { path = "../../crates/notifications" }
+# Application layer — use cases and DTOs
+application = { path = "../../crates/application" }
+
+# Domain layer — identity types
+domain = { path = "../../crates/domain" }
+
+# UI layer — egui screens and widgets
+ui = { path = "../../crates/ui" }
+
+# Infrastructure crates (implement ports) — uncomment when implemented:
+# networking = { path = "../../crates/networking" }
+# persistence = { path = "../../crates/persistence" }
+# security = { path = "../../crates/security" }
+# notifications = { path = "../../crates/notifications" }
+
+# UI framework (workspace version: 0.28)
 eframe = { workspace = true }
+egui = { workspace = true }
+
+# Async runtime (workspace version: 1.38, full features)
 tokio = { workspace = true }
+
+# Structured logging (workspace version)
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+# Error handling (workspace version)
+thiserror = { workspace = true }
+
+# Time handling (workspace version)
+chrono = { workspace = true }
+
+# UUID (workspace version)
+uuid = { workspace = true }

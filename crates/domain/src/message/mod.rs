@@ -1,3 +1,7 @@
+//! Message module exports.
+//!
+//! Contains chat message entities, delivery state machine, and content types.
+
 pub mod message;
 pub mod message_state;
 

@@ -1,22 +1,37 @@
 ﻿[package]
 name = "rubix-application"
-version.workspace = true
-authors.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-description = "Application use cases and DTOs"
+version = "1.0.0"
+edition = "2021"
+authors = ["Rubix-PingPongzz Team"]
+description = "Application layer — use cases and ports for Rubix-PingPongzz"
+license = "MIT OR Apache-2.0"
+rust-version = "1.75"
 
 [dependencies]
-rubix-domain = { path = "../domain" }
-rubix-security = { path = "../security" }
-rubix-networking = { path = "../networking" }
-rubix-persistence = { path = "../persistence" }
-tokio = { workspace = true }
-thiserror = { workspace = true }
-tracing = { workspace = true }
-serde = { workspace = true }
-uuid = { workspace = true }
+# Domain layer — sole direct dependency per Clean Architecture
+domain = { path = "../domain" }
+
+# Async runtime
+tokio = { version = "1.35", features = ["rt", "sync", "time", "macros"] }
+
+# Async trait methods
+async-trait = "0.1"
+
+# Structured logging (security: no sensitive data in Display)
+tracing = "0.1"
+
+# Error derivation
+thiserror = "1.0"
+
+# Serialization for DTO boundary
+serde = { version = "1.0", features = ["derive"] }
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUID parsing/serialization
+uuid = { version = "1.6", features = ["serde", "v4"] }
 
 [dev-dependencies]
-tokio-test = { workspace = true }
+tokio-test = "0.4"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

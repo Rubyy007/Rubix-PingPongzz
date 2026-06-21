@@ -308,7 +308,7 @@ mod tests {
 
         assert_eq!(keys1.ed25519.public.0, keys2.ed25519.public.0);
         assert_eq!(keys1.x25519.public.0, keys2.x25519.public.0);
-    }
+    } v
 
     #[test]
     fn corrupted_blob_fails() {

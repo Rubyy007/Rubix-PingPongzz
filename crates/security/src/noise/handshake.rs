@@ -311,16 +311,15 @@ async fn perform_responder_handshake<S>(
 where
     S: tokio::io::AsyncReadExt + tokio::io::AsyncWriteExt + Unpin,
 {
-    // Step 1: Receive initiator's identity payload
+    // Step 1: Receive initiator's identity payload and verify it (signature, timestamp, fingerprint derivation)
     let msg1 = recv_message(stream).await?;
     let payload1 = handshake.read_message(&msg1)?;
     let payload: IdentityBindPayload = serde_json::from_slice(&payload1)
         .map_err(|e| SecurityError::IdentityBindingFailed(format!("parse: {}", e)))?;
 
-    // Derive fingerprint from payload to know who we are talking to
-    let ed25519_pub = crate::keys::ed25519::Ed25519PublicKey::from_bytes(&payload.ed25519_public)?;
-    let x25519_pub = crate::keys::x25519::X25519PublicKey::from_bytes(&payload.x25519_public)?;
-    let fingerprint = crate::fingerprint::derive::derive_fingerprint(&ed25519_pub, &x25519_pub)?;
+    // Verify initiator payload without an expected fingerprint (responder does not know initiator beforehand)
+    let initiator_verified = payload.verify_unbound()?;
+    let fingerprint = initiator_verified.fingerprint.clone();
 
     // Step 2: Send our identity payload
     let identity_payload = handshake.create_identity_payload()?;
@@ -338,11 +337,13 @@ where
 
     let transport = handshake.into_transport()?;
 
+    // Use the verified identity from the initiator's payload as the verified remote identity
     let verified = VerifiedIdentity {
-        ed25519_public: ed25519_pub,
-        x25519_public: x25519_pub,
-        fingerprint,
-        timestamp: payload.timestamp,
+        ed25519_public: initiator_verified.ed25519_public,
+        x25519_public: initiator_verified.x25519_public,
+        fingerprint: initiator_verified.fingerprint,
+        timestamp: initiator_verified.timestamp,
+        nonce: initiator_verified.nonce,
     };
 
     Ok((transport, verified))

@@ -1,3 +1,7 @@
+//! Identity module exports.
+//!
+//! Contains the local user's cryptographic identity and human-verifiable fingerprint.
+
 pub mod fingerprint;
 pub mod identity;
 

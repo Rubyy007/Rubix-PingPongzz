@@ -15,6 +15,7 @@ serde = { workspace = true }
 zeroize = { workspace = true }
 subtle = { workspace = true }
 hex = { workspace = true }
+async-trait = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

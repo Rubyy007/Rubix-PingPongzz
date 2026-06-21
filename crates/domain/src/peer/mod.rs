@@ -1,3 +1,11 @@
+//! Peer module exports.
+//!
+//! Contains remote peer entities and connection status tracking.
+//!
+//! # Security
+//! - Peer verification status is ONLY set after successful Noise handshake
+//! - Network addresses are untrusted until cryptographic verification completes
+
 pub mod peer;
 pub mod peer_status;
 

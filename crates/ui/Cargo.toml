@@ -5,15 +5,32 @@ authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "egui-based user interface"
+description = "egui-based UI for Rubix-PingPongzz"
 
 [dependencies]
-rubix-domain = { path = "../domain" }
-rubix-application = { path = "../application" }
-eframe = { workspace = true }
+# Application layer — DTOs and use cases
+application = { path = "../application" }
+
+# Domain layer — fingerprint, peer types
+domain = { path = "../domain" }
+
+# UI framework (workspace version: 0.28)
 egui = { workspace = true }
+
+# Async runtime integration (workspace version: 1.38)
 tokio = { workspace = true }
+
+# Structured logging (workspace version)
 tracing = { workspace = true }
 
-[dev-dependencies]
-tokio-test = { workspace = true }
+# Time formatting (workspace version)
+chrono = { workspace = true }
+
+# UUID display (workspace version)
+uuid = { workspace = true }
+
+# Serialization for clipboard/copy (workspace version)
+serde = { workspace = true }
+
+# Error handling (workspace version)
+thiserror = { workspace = true }

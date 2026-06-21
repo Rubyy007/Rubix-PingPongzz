@@ -5,13 +5,26 @@ authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Desktop notification system"
+description = "OS notification infrastructure for Rubix-PingPongzz"
 
 [dependencies]
-rubix-domain = { path = "../domain" }
+# Application layer — port traits only
+application = { path = "../application" }
+
+# Domain layer — fingerprint types
+domain = { path = "../domain" }
+
+# Cross-platform notifications (workspace version: 4.11)
 notify-rust = { workspace = true }
-thiserror = { workspace = true }
+
+# Async runtime integration (workspace version)
+tokio = { workspace = true }
+
+# Structured logging (workspace version)
 tracing = { workspace = true }
 
-[dev-dependencies]
-tokio-test = { workspace = true }
+# Error handling (workspace version)
+thiserror = { workspace = true }
+
+# Time handling (workspace version)
+chrono = { workspace = true }

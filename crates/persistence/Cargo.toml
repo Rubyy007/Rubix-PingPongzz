@@ -18,6 +18,7 @@ tracing = { workspace = true }
 serde = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+async-trait = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
