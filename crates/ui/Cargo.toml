@@ -9,10 +9,10 @@ description = "egui-based UI for Rubix-PingPongzz"
 
 [dependencies]
 # Application layer — DTOs and use cases
-application = { path = "../application" }
+rubix-application = { path = "../application" }
 
 # Domain layer — fingerprint, peer types
-domain = { path = "../domain" }
+rubix-domain = { path = "../domain" }
 
 # UI framework (workspace version: 0.28)
 egui = { workspace = true }

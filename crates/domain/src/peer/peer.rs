@@ -6,7 +6,7 @@
 //! - `verified` flag indicates completed cryptographic handshake
 
 use crate::errors::{DomainError, DomainResult, validate_display_name};
-use crate::identity::{Fingerprint, Identity, ED25519_PUBLIC_KEY_LEN, X25519_PUBLIC_KEY_LEN};
+use crate::identity::{Fingerprint, ED25519_PUBLIC_KEY_LEN, X25519_PUBLIC_KEY_LEN};
 use crate::peer::peer_status::PeerStatus;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -48,40 +48,49 @@ pub struct PeerBuilder {
 }
 
 impl PeerBuilder {
+    /// Create a new peer builder with default (empty) state.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Set the peer's display name.
     pub fn display_name(mut self, name: impl Into<String>) -> Self {
         self.display_name = Some(name.into());
         self
     }
 
+    /// Set the peer's cryptographic fingerprint.
     pub fn fingerprint(mut self, fp: Fingerprint) -> Self {
         self.fingerprint = Some(fp);
         self
     }
 
+    /// Set the peer's Ed25519 public key.
     pub fn ed25519_public(mut self, key: [u8; ED25519_PUBLIC_KEY_LEN]) -> Self {
         self.ed25519_public = Some(key);
         self
     }
 
+    /// Set the peer's X25519 public key (for Noise encryption).
     pub fn x25519_public(mut self, key: [u8; X25519_PUBLIC_KEY_LEN]) -> Self {
         self.x25519_public = Some(key);
         self
     }
 
+    /// Add a single network address (IP:port or hostname:port) to the peer.
     pub fn address(mut self, addr: impl Into<String>) -> Self {
         self.addresses.push(addr.into());
         self
     }
 
+    /// Replace all addresses with the provided vector.
     pub fn addresses(mut self, addrs: Vec<String>) -> Self {
         self.addresses = addrs;
         self
     }
 
+    /// Validate and construct the Peer.
+    /// Returns Err if any required field is missing or validation fails.
     pub fn build(self) -> DomainResult<Peer> {
         let display_name = self.display_name.ok_or_else(|| DomainError::Validation {
             field: "display_name".into(),
@@ -128,46 +137,57 @@ impl PeerBuilder {
 }
 
 impl Peer {
+    /// Create a new PeerBuilder for constructing Peer instances.
     pub fn builder() -> PeerBuilder {
         PeerBuilder::new()
     }
 
+    /// Get the peer's unique identifier.
     pub fn id(&self) -> Uuid {
         self.id
     }
 
+    /// Get the peer's display name.
     pub fn display_name(&self) -> &str {
         &self.display_name
     }
 
+    /// Get the peer's cryptographic fingerprint.
     pub fn fingerprint(&self) -> &Fingerprint {
         &self.fingerprint
     }
 
+    /// Get the peer's Ed25519 public key for signature verification.
     pub fn ed25519_public(&self) -> &[u8; ED25519_PUBLIC_KEY_LEN] {
         &self.ed25519_public
     }
 
+    /// Get the peer's X25519 public key for Noise key agreement.
     pub fn x25519_public(&self) -> &[u8; X25519_PUBLIC_KEY_LEN] {
         &self.x25519_public
     }
 
+    /// Get the peer's network addresses.
     pub fn addresses(&self) -> &[String] {
         &self.addresses
     }
 
+    /// Get the peer's current online/offline status.
     pub fn status(&self) -> &PeerStatus {
         &self.status
     }
 
+    /// Check if the peer's cryptographic identity has been verified (Noise handshake complete).
     pub fn is_verified(&self) -> bool {
         self.verified
     }
 
+    /// Get the timestamp when this peer was first discovered.
     pub fn first_seen(&self) -> DateTime<Utc> {
         self.first_seen
     }
 
+    /// Get the timestamp when this peer was last seen or contacted.
     pub fn last_seen(&self) -> DateTime<Utc> {
         self.last_seen
     }

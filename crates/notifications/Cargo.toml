@@ -9,10 +9,10 @@ description = "OS notification infrastructure for Rubix-PingPongzz"
 
 [dependencies]
 # Application layer — port traits only
-application = { path = "../application" }
+rubix-application = { path = "../application" }
 
 # Domain layer — fingerprint types
-domain = { path = "../domain" }
+rubix-domain = { path = "../domain" }
 
 # Cross-platform notifications (workspace version: 4.11)
 notify-rust = { workspace = true }

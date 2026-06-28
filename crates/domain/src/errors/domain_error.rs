@@ -4,7 +4,8 @@
 //! Do not add variants that distinguish between "exists but invalid" vs "does not exist"
 //! for authentication-related operations.
 
-use std::fmt;
+#![allow(missing_docs)]
+
 use thiserror::Error;
 
 /// Maximum length for display names to prevent DoS via memory exhaustion.
@@ -46,11 +47,19 @@ pub enum DomainError {
 
     /// Validation failure with field context (safe to expose).
     #[error("validation failed: {field} - {reason}")]
-    Validation { field: String, reason: String },
+    Validation {
+        /// Name of the field that failed validation.
+        field: String,
+        /// Description of the validation failure reason.
+        reason: String,
+    },
 
     /// Resource limit exceeded.
     #[error("resource limit exceeded: {resource}")]
-    ResourceLimit { resource: String },
+    ResourceLimit {
+        /// Description of which resource exceeded its limit.
+        resource: String,
+    },
 
     /// Concurrent modification detected.
     #[error("concurrent modification detected")]

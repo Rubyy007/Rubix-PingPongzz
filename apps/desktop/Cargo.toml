@@ -13,13 +13,13 @@ path = "src/main.rs"
 
 [dependencies]
 # Application layer — use cases and DTOs
-application = { path = "../../crates/application" }
+rubix-application = { path = "../../crates/application" }
 
 # Domain layer — identity types
-domain = { path = "../../crates/domain" }
+rubix-domain = { path = "../../crates/domain" }
 
 # UI layer — egui screens and widgets
-ui = { path = "../../crates/ui" }
+rubix-ui = { path = "../../crates/ui" }
 
 # Infrastructure crates (implement ports) — uncomment when implemented:
 # networking = { path = "../../crates/networking" }

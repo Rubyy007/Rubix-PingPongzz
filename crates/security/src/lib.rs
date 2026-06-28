@@ -26,11 +26,15 @@
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::expect_used)]
 
-// Public modules
+/// Error types and result aliases for the security layer.
 pub mod error;
+/// Fingerprint derivation from public key material.
 pub mod fingerprint;
+/// Cryptographic key primitives (Ed25519, X25519, identity bundles).
 pub mod keys;
+/// Noise protocol handshake, identity binding, and secure transport.
 pub mod noise;
+/// Encrypted key storage with passphrase-derived keys.
 pub mod storage;
 
 // Re‑export core error type and result alias
@@ -47,12 +51,13 @@ pub use fingerprint::derive::derive_fingerprint;
 // Re‑export Noise handshake, identity binding, and transport
 pub use noise::handshake::{
     NoiseHandshake,
+    NonceCache,
     run_initiator_handshake,
     run_responder_handshake,
     HANDSHAKE_TIMEOUT_SECS,
 };
 pub use noise::identity_bind::{IdentityBindPayload, VerifiedIdentity};
-pub use noise::transport::{Transport, TransportState};
+pub use noise::transport::{Transport, MAX_TRANSPORT_FRAME_SIZE, MAX_TRANSPORT_MSG_SIZE};
 
 // Re‑export secure storage
 pub use storage::secure_store::SecureStore;

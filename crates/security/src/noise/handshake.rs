@@ -1,9 +1,10 @@
-//! Noise KK handshake using the `snow` crate with identity binding.
+//! Noise KK handshake with shared nonce replay cache.
 //!
 //! # Security
 //! - Noise_KK_25519_ChaChaPoly_BLAKE2s provides mutual authentication.
 //! - Ed25519 identity binding payload proves key ownership.
 //! - Timestamp-based replay protection (+/-30s window).
+//! - Nonce replay cache prevents duplicate payloads within the TTL window.
 //! - Handshake timeout prevents half-open connections.
 //! - Cancellation support via `tokio_util::sync::CancellationToken`.
 
@@ -14,102 +15,186 @@ use crate::noise::identity_bind::{IdentityBindPayload, VerifiedIdentity};
 use crate::noise::transport::Transport;
 use rubix_domain::identity::fingerprint::Fingerprint;
 use snow::{Builder as SnowBuilder, HandshakeState};
-use std::sync::Arc;
-use tokio::time::{timeout, Duration};
+use std::collections::{HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
-/// Default handshake timeout.
+/// Default handshake timeout in seconds.
 pub const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
-
-/// Maximum handshake message size (prevent DoS).
 const MAX_HANDSHAKE_MSG_SIZE: usize = 4096;
+const NONCE_CACHE_TTL_SECS: u64 = 60;
+
+/// Shared nonce cache to prevent replay attacks across all handshake instances.
+///
+/// # Thread Safety
+/// Wrap in `Arc<Mutex<NonceCache>>` and share between all initiator/responder
+/// handshakes. A per-handshake cache is ineffective because replay attacks
+/// arrive on new TCP connections.
+pub struct NonceCache {
+    inner: HashSet<(Fingerprint, [u8; 12])>,
+    order: VecDeque<(Fingerprint, [u8; 12], Instant)>,
+    max_entries: usize,
+}
+
+impl NonceCache {
+    /// Create a new cache with a maximum number of tracked entries.
+    pub fn new(max_entries: usize) -> Self {
+        Self {
+            inner: HashSet::new(),
+            order: VecDeque::with_capacity(max_entries),
+            max_entries,
+        }
+    }
+
+    /// Check if `(fingerprint, nonce)` has been seen before, and insert it.
+    ///
+    /// Returns `false` if the nonce was already present (replay detected).
+    pub fn check_and_insert(&mut self, fingerprint: &Fingerprint, nonce: &[u8; 12]) -> bool {
+        let now = Instant::now();
+
+        // Evict expired entries
+        while let Some((_, _, time)) = self.order.front() {
+            if time.elapsed() > Duration::from_secs(NONCE_CACHE_TTL_SECS) {
+                let (fp, nonce, _) = self.order.pop_front().unwrap();
+                self.inner.remove(&(fp, nonce));
+            } else {
+                break;
+            }
+        }
+
+        let key = (fingerprint.clone(), *nonce);
+        if self.inner.contains(&key) {
+            return false;
+        }
+
+        // Evict oldest if at capacity
+        if self.inner.len() >= self.max_entries {
+            if let Some((fp, nonce, _)) = self.order.pop_front() {
+                self.inner.remove(&(fp, nonce));
+            }
+        }
+
+        self.inner.insert(key.clone());
+        self.order.push_back((fingerprint.clone(), *nonce, now));
+        true
+    }
+}
 
 /// Wrapper for the Noise KK handshake with identity verification.
+///
+/// # Requirements
+/// `Fingerprint` must implement `Clone`, `Hash`, and `Eq`.
 pub struct NoiseHandshake {
     state: HandshakeState,
     our_identity: Arc<IdentityKeys>,
     remote_fingerprint: Option<Fingerprint>,
     verified_remote: Option<VerifiedIdentity>,
+    nonce_cache: Arc<Mutex<NonceCache>>,
 }
 
 impl NoiseHandshake {
-    /// Create a new handshake as an **initiator** (caller).
-    ///
-    /// # Arguments
-    /// - `our_identity`: Our full identity keys (Ed25519 + X25519).
-    /// - `remote_fingerprint`: Expected fingerprint of the responder.
-    /// - `remote_x25519_public`: Responder's X25519 static public key (required for KK pattern).
-    ///
-    /// # Security
-    /// The initiator MUST know the responder's static X25519 key in advance.
-    /// This is verified against the fingerprint after handshake completion.
+    /// Create a new handshake as an **initiator** with a fresh nonce cache.
     pub fn new_initiator(
         our_identity: Arc<IdentityKeys>,
         remote_fingerprint: Fingerprint,
         remote_x25519_public: &X25519PublicKey,
     ) -> SecurityResult<Self> {
+        Self::new_initiator_with_cache(
+            our_identity,
+            remote_fingerprint,
+            remote_x25519_public,
+            Arc::new(Mutex::new(NonceCache::new(10000))),
+        )
+    }
+
+    /// Create a new handshake as an **initiator** with a shared nonce cache.
+    pub fn new_initiator_with_cache(
+        our_identity: Arc<IdentityKeys>,
+        remote_fingerprint: Fingerprint,
+        remote_x25519_public: &X25519PublicKey,
+        nonce_cache: Arc<Mutex<NonceCache>>,
+    ) -> SecurityResult<Self> {
         let params = "Noise_KK_25519_ChaChaPoly_BLAKE2s"
             .parse()
             .map_err(|e| SecurityError::HandshakeFailed(format!("invalid params: {}", e)))?;
 
-        let static_private = our_identity.x25519.secret.0;
+        let static_private = our_identity.x25519.secret_bytes();
         let remote_static = remote_x25519_public.0;
 
         let builder = SnowBuilder::new(params)
             .local_private_key(&static_private)
-            .remote_public_key(&remote_static)
-            .map_err(|e| SecurityError::HandshakeFailed(format!("remote key error: {}", e)))?;
+            .remote_public_key(&remote_static);
 
         let state = builder
             .build_initiator()
             .map_err(|e| SecurityError::HandshakeFailed(format!("build initiator: {}", e)))?;
 
-        info!(
-            "initiated KK handshake with fingerprint {}",
-            remote_fingerprint
-        );
+        info!("initiated KK handshake with fingerprint {}", remote_fingerprint);
 
         Ok(Self {
             state,
             our_identity,
             remote_fingerprint: Some(remote_fingerprint),
             verified_remote: None,
+            nonce_cache,
         })
     }
 
-    /// Create a new handshake as a **responder** (listener).
-    ///
-    /// The responder does not know the initiator's key in advance.
-    /// Identity verification happens after receiving the first message.
-    pub fn new_responder(our_identity: Arc<IdentityKeys>) -> SecurityResult<Self> {
+    /// Create a new handshake as a **responder** with a fresh nonce cache.
+    pub fn new_responder(
+        our_identity: Arc<IdentityKeys>,
+        remote_fingerprint: Fingerprint,
+        remote_x25519_public: &X25519PublicKey,
+    ) -> SecurityResult<Self> {
+        Self::new_responder_with_cache(
+            our_identity,
+            remote_fingerprint,
+            remote_x25519_public,
+            Arc::new(Mutex::new(NonceCache::new(10000))),
+        )
+    }
+
+    /// Create a new handshake as a **responder** with a shared nonce cache.
+    pub fn new_responder_with_cache(
+        our_identity: Arc<IdentityKeys>,
+        remote_fingerprint: Fingerprint,
+        remote_x25519_public: &X25519PublicKey,
+        nonce_cache: Arc<Mutex<NonceCache>>,
+    ) -> SecurityResult<Self> {
         let params = "Noise_KK_25519_ChaChaPoly_BLAKE2s"
             .parse()
             .map_err(|e| SecurityError::HandshakeFailed(format!("invalid params: {}", e)))?;
 
-        let static_private = our_identity.x25519.secret.0;
+        let static_private = our_identity.x25519.secret_bytes();
+        let remote_static = remote_x25519_public.0;
 
-        let builder = SnowBuilder::new(params).local_private_key(&static_private);
+        let builder = SnowBuilder::new(params)
+            .local_private_key(&static_private)
+            .remote_public_key(&remote_static);
 
         let state = builder
             .build_responder()
             .map_err(|e| SecurityError::HandshakeFailed(format!("build responder: {}", e)))?;
 
-        info!("listening for KK handshake");
+        info!("listening for KK handshake from fingerprint {}", remote_fingerprint);
 
         Ok(Self {
             state,
             our_identity,
-            remote_fingerprint: None,
+            remote_fingerprint: Some(remote_fingerprint),
             verified_remote: None,
+            nonce_cache,
         })
     }
 
-    /// Read an incoming handshake message.
+    /// Read and decrypt an incoming Noise handshake message.
     ///
-    /// # Security
-    /// - Input is bounded to `MAX_HANDSHAKE_MSG_SIZE`.
-    /// - Output buffer is pre-allocated to prevent unbounded growth.
+    /// # Errors
+    /// Returns `SecurityError::HandshakeFailed` if the message is too large
+    /// or the Noise state machine rejects it.
     pub fn read_message(&mut self, input: &[u8]) -> SecurityResult<Vec<u8>> {
         if input.len() > MAX_HANDSHAKE_MSG_SIZE {
             return Err(SecurityError::HandshakeFailed(format!(
@@ -126,7 +211,11 @@ impl NoiseHandshake {
         Ok(output)
     }
 
-    /// Write the next handshake message.
+    /// Encrypt and write the next Noise handshake message.
+    ///
+    /// # Errors
+    /// Returns `SecurityError::HandshakeFailed` if the Noise state machine
+    /// rejects the payload.
     pub fn write_message(&mut self, payload: &[u8]) -> SecurityResult<Vec<u8>> {
         let mut output = vec![0u8; MAX_HANDSHAKE_MSG_SIZE];
         let len = self
@@ -137,7 +226,7 @@ impl NoiseHandshake {
         Ok(output)
     }
 
-    /// Check if the handshake is complete.
+    /// Check if the Noise handshake is complete.
     pub fn is_complete(&self) -> bool {
         self.state.is_handshake_finished()
     }
@@ -147,35 +236,32 @@ impl NoiseHandshake {
         self.verified_remote.as_ref()
     }
 
-    /// Set the verified remote identity (called by application layer after payload verification).
+    /// Set the verified remote identity (called after payload verification).
     pub fn set_verified_remote(&mut self, identity: VerifiedIdentity) {
         self.verified_remote = Some(identity);
     }
 
-    /// After handshake complete, consume into a transport.
+    /// Consume the handshake into a secure transport.
     ///
-    /// # Security
-    /// - Verifies that handshake actually finished.
-    /// - Verifies remote identity was bound (for initiator).
+    /// # Errors
+    /// Returns `SecurityError::HandshakeFailed` if the handshake is incomplete.
+    /// Returns `SecurityError::IdentityBindingFailed` if the remote identity
+    /// was not verified.
     pub fn into_transport(self) -> SecurityResult<Transport> {
         if !self.is_complete() {
             return Err(SecurityError::HandshakeFailed(
                 "handshake not complete".into(),
             ));
         }
-
-        // For initiator: must have verified remote identity
-        if self.remote_fingerprint.is_some() && self.verified_remote.is_none() {
+        if self.verified_remote.is_none() {
             return Err(SecurityError::IdentityBindingFailed(
                 "remote identity not verified".into(),
             ));
         }
-
         let transport_state = self
             .state
             .into_transport_mode()
             .map_err(|e| SecurityError::HandshakeFailed(format!("into transport: {}", e)))?;
-
         info!("handshake complete, transport established");
         Ok(Transport::new(transport_state))
     }
@@ -186,16 +272,20 @@ impl NoiseHandshake {
             &self.our_identity.ed25519,
             &self.our_identity.x25519.public,
         )?;
-        serde_json::to_vec(&payload)
-            .map_err(|e| SecurityError::Serialization(format!("payload: {}", e)))
+        Ok(payload.to_bytes().to_vec())
     }
 
     /// Parse and verify an identity binding payload from a decrypted handshake message.
+    ///
+    /// # Errors
+    /// Returns `SecurityError::IdentityBindingFailed` if parsing or signature
+    /// verification fails. Returns `SecurityError::ReplayDetected` if the nonce
+    /// has been seen before.
     pub fn verify_identity_payload(
-        &self,
+        &mut self,
         payload_bytes: &[u8],
     ) -> SecurityResult<VerifiedIdentity> {
-        let payload: IdentityBindPayload = serde_json::from_slice(payload_bytes)
+        let payload = IdentityBindPayload::from_bytes(payload_bytes)
             .map_err(|e| SecurityError::IdentityBindingFailed(format!("parse: {}", e)))?;
 
         let expected_fp = self
@@ -203,153 +293,22 @@ impl NoiseHandshake {
             .as_ref()
             .ok_or_else(|| SecurityError::Internal("no expected fingerprint".into()))?;
 
-        payload.verify(expected_fp)
+        let verified = payload.verify(expected_fp)?;
+
+        let mut cache = self
+            .nonce_cache
+            .lock()
+            .map_err(|_| SecurityError::Internal("nonce cache poisoned".into()))?;
+
+        if !cache.check_and_insert(&verified.fingerprint, &verified.nonce) {
+            return Err(SecurityError::ReplayDetected("duplicate nonce".into()));
+        }
+
+        Ok(verified)
     }
 }
 
-/// Execute a full initiator handshake with timeout and cancellation.
-///
-/// This is a high-level helper that orchestrates the handshake over a byte stream.
-/// In practice, the networking crate will call the lower-level `NoiseHandshake` methods.
-///
-/// # Returns
-/// - `Ok((Transport, VerifiedIdentity))` on success.
-/// - `Err(SecurityError::HandshakeTimeout)` if timeout expires.
-/// - `Err(SecurityError::HandshakeCancelled)` if cancelled.
-pub async fn run_initiator_handshake<S>(
-    mut handshake: NoiseHandshake,
-    stream: &mut S,
-    cancel: CancellationToken,
-) -> SecurityResult<(Transport, VerifiedIdentity)>
-where
-    S: tokio::io::AsyncReadExt + tokio::io::AsyncWriteExt + Unpin,
-{
-    let timeout_duration = Duration::from_secs(HANDSHAKE_TIMEOUT_SECS);
-
-    let result = timeout(timeout_duration, async {
-        tokio::select! {
-            biased;
-            _ = cancel.cancelled() => {
-                Err(SecurityError::HandshakeCancelled)
-            }
-            result = perform_initiator_handshake(&mut handshake, stream) => {
-                result
-            }
-        }
-    })
-    .await
-    .map_err(|_| SecurityError::HandshakeTimeout(HANDSHAKE_TIMEOUT_SECS))?;
-
-    result
-}
-
-async fn perform_initiator_handshake<S>(
-    handshake: &mut NoiseHandshake,
-    stream: &mut S,
-) -> SecurityResult<(Transport, VerifiedIdentity)>
-where
-    S: tokio::io::AsyncReadExt + tokio::io::AsyncWriteExt + Unpin,
-{
-    // Step 1: Send identity payload in first message
-    let identity_payload = handshake.create_identity_payload()?;
-    let msg1 = handshake.write_message(&identity_payload)?;
-    send_message(stream, &msg1).await?;
-    debug!("initiator sent message 1 ({} bytes)", msg1.len());
-
-    // Step 2: Receive responder's message with their identity payload
-    let msg2 = recv_message(stream).await?;
-    let payload2 = handshake.read_message(&msg2)?;
-    let verified = handshake.verify_identity_payload(&payload2)?;
-    handshake.set_verified_remote(verified.clone());
-    debug!("initiator verified responder identity");
-
-    // Step 3: Send final handshake message (empty payload)
-    let msg3 = handshake.write_message(b"")?;
-    send_message(stream, &msg3).await?;
-    debug!("initiator sent message 3");
-
-    // Step 4: Receive final confirmation
-    let msg4 = recv_message(stream).await?;
-    let _ = handshake.read_message(&msg4)?;
-
-    let transport = handshake.into_transport()?;
-    Ok((transport, verified))
-}
-
-/// Execute a full responder handshake with timeout and cancellation.
-pub async fn run_responder_handshake<S>(
-    mut handshake: NoiseHandshake,
-    stream: &mut S,
-    cancel: CancellationToken,
-) -> SecurityResult<(Transport, VerifiedIdentity)>
-where
-    S: tokio::io::AsyncReadExt + tokio::io::AsyncWriteExt + Unpin,
-{
-    let timeout_duration = Duration::from_secs(HANDSHAKE_TIMEOUT_SECS);
-
-    let result = timeout(timeout_duration, async {
-        tokio::select! {
-            biased;
-            _ = cancel.cancelled() => {
-                Err(SecurityError::HandshakeCancelled)
-            }
-            result = perform_responder_handshake(&mut handshake, stream) => {
-                result
-            }
-        }
-    })
-    .await
-    .map_err(|_| SecurityError::HandshakeTimeout(HANDSHAKE_TIMEOUT_SECS))?;
-
-    result
-}
-
-async fn perform_responder_handshake<S>(
-    handshake: &mut NoiseHandshake,
-    stream: &mut S,
-) -> SecurityResult<(Transport, VerifiedIdentity)>
-where
-    S: tokio::io::AsyncReadExt + tokio::io::AsyncWriteExt + Unpin,
-{
-    // Step 1: Receive initiator's identity payload and verify it (signature, timestamp, fingerprint derivation)
-    let msg1 = recv_message(stream).await?;
-    let payload1 = handshake.read_message(&msg1)?;
-    let payload: IdentityBindPayload = serde_json::from_slice(&payload1)
-        .map_err(|e| SecurityError::IdentityBindingFailed(format!("parse: {}", e)))?;
-
-    // Verify initiator payload without an expected fingerprint (responder does not know initiator beforehand)
-    let initiator_verified = payload.verify_unbound()?;
-    let fingerprint = initiator_verified.fingerprint.clone();
-
-    // Step 2: Send our identity payload
-    let identity_payload = handshake.create_identity_payload()?;
-    let msg2 = handshake.write_message(&identity_payload)?;
-    send_message(stream, &msg2).await?;
-    debug!("responder sent message 2");
-
-    // Step 3: Receive final handshake message
-    let msg3 = recv_message(stream).await?;
-    let _ = handshake.read_message(&msg3)?;
-
-    // Step 4: Send final confirmation
-    let msg4 = handshake.write_message(b"")?;
-    send_message(stream, &msg4).await?;
-
-    let transport = handshake.into_transport()?;
-
-    // Use the verified identity from the initiator's payload as the verified remote identity
-    let verified = VerifiedIdentity {
-        ed25519_public: initiator_verified.ed25519_public,
-        x25519_public: initiator_verified.x25519_public,
-        fingerprint: initiator_verified.fingerprint,
-        timestamp: initiator_verified.timestamp,
-        nonce: initiator_verified.nonce,
-    };
-
-    Ok((transport, verified))
-}
-
-// Helper: send length-prefixed message
+/// Send a length-prefixed message over the stream.
 async fn send_message<S>(stream: &mut S, data: &[u8]) -> SecurityResult<()>
 where
     S: tokio::io::AsyncWriteExt + Unpin,
@@ -363,10 +322,19 @@ where
         .write_all(data)
         .await
         .map_err(|e| SecurityError::HandshakeFailed(format!("send: {}", e)))?;
+    stream
+        .flush()
+        .await
+        .map_err(|e| SecurityError::HandshakeFailed(format!("flush: {}", e)))?;
     Ok(())
 }
 
-// Helper: receive length-prefixed message
+/// Receive a length-prefixed message from the stream.
+///
+/// # Security
+/// Length is bounded to `MAX_HANDSHAKE_MSG_SIZE` before allocating the
+/// receive buffer — prevents a malicious peer from forcing an unbounded
+/// allocation via a forged length prefix (DoS).
 async fn recv_message<S>(stream: &mut S) -> SecurityResult<Vec<u8>>
 where
     S: tokio::io::AsyncReadExt + Unpin,
@@ -391,58 +359,200 @@ where
     Ok(buf)
 }
 
+/// Execute a full initiator handshake with timeout and cancellation.
+///
+/// # Returns
+/// - `Ok((Transport, VerifiedIdentity))` on success.
+/// - `Err(SecurityError::HandshakeTimeout)` if timeout expires.
+/// - `Err(SecurityError::HandshakeCancelled)` if cancelled.
+pub async fn run_initiator_handshake<S>(
+    handshake: NoiseHandshake,
+    stream: &mut S,
+    cancel: CancellationToken,
+) -> SecurityResult<(Transport, VerifiedIdentity)>
+where
+    S: tokio::io::AsyncReadExt + tokio::io::AsyncWriteExt + Unpin,
+{
+    let timeout_duration = Duration::from_secs(HANDSHAKE_TIMEOUT_SECS);
+    let result = timeout(timeout_duration, async move {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                Err(SecurityError::HandshakeCancelled)
+            }
+            result = perform_initiator_handshake(handshake, stream) => {
+                result
+            }
+        }
+    })
+    .await
+    .map_err(|_| SecurityError::HandshakeTimeout(HANDSHAKE_TIMEOUT_SECS))?;
+    result
+}
+
+async fn perform_initiator_handshake<S>(
+    mut handshake: NoiseHandshake,
+    stream: &mut S,
+) -> SecurityResult<(Transport, VerifiedIdentity)>
+where
+    S: tokio::io::AsyncReadExt + tokio::io::AsyncWriteExt + Unpin,
+{
+    let identity_payload = handshake.create_identity_payload()?;
+    let msg1 = handshake.write_message(&identity_payload)?;
+    send_message(stream, &msg1).await?;
+    debug!("initiator sent message 1");
+
+    let msg2 = recv_message(stream).await?;
+    let payload2 = handshake.read_message(&msg2)?;
+    let verified = handshake.verify_identity_payload(&payload2)?;
+    handshake.set_verified_remote(verified.clone());
+
+    let transport = handshake.into_transport()?;
+    Ok((transport, verified))
+}
+
+/// Execute a full responder handshake with timeout and cancellation.
+///
+/// # Returns
+/// - `Ok((Transport, VerifiedIdentity))` on success.
+/// - `Err(SecurityError::HandshakeTimeout)` if timeout expires.
+/// - `Err(SecurityError::HandshakeCancelled)` if cancelled.
+pub async fn run_responder_handshake<S>(
+    handshake: NoiseHandshake,
+    stream: &mut S,
+    cancel: CancellationToken,
+) -> SecurityResult<(Transport, VerifiedIdentity)>
+where
+    S: tokio::io::AsyncReadExt + tokio::io::AsyncWriteExt + Unpin,
+{
+    let timeout_duration = Duration::from_secs(HANDSHAKE_TIMEOUT_SECS);
+    let result = timeout(timeout_duration, async move {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                Err(SecurityError::HandshakeCancelled)
+            }
+            result = perform_responder_handshake(handshake, stream) => {
+                result
+            }
+        }
+    })
+    .await
+    .map_err(|_| SecurityError::HandshakeTimeout(HANDSHAKE_TIMEOUT_SECS))?;
+    result
+}
+
+async fn perform_responder_handshake<S>(
+    mut handshake: NoiseHandshake,
+    stream: &mut S,
+) -> SecurityResult<(Transport, VerifiedIdentity)>
+where
+    S: tokio::io::AsyncReadExt + tokio::io::AsyncWriteExt + Unpin,
+{
+    let msg1 = recv_message(stream).await?;
+    let payload1 = handshake.read_message(&msg1)?;
+    let initiator_verified = handshake.verify_identity_payload(&payload1)?;
+    handshake.set_verified_remote(initiator_verified.clone());
+
+    let identity_payload = handshake.create_identity_payload()?;
+    let msg2 = handshake.write_message(&identity_payload)?;
+    send_message(stream, &msg2).await?;
+    debug!("responder sent message 2");
+
+    let transport = handshake.into_transport()?;
+    Ok((transport, initiator_verified))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::keys::identity_keys::IdentityKeys;
     use tokio::io::duplex;
+    use tokio::io::AsyncWriteExt;
+
+    fn shared_cache() -> Arc<Mutex<NonceCache>> {
+        Arc::new(Mutex::new(NonceCache::new(10000)))
+    }
 
     #[tokio::test]
-    async fn initiator_responder_handshake_success() {
+    async fn handshake_success() {
         let alice_keys = Arc::new(IdentityKeys::generate().unwrap());
         let bob_keys = Arc::new(IdentityKeys::generate().unwrap());
-
         let alice_fp = alice_keys.fingerprint().unwrap();
         let bob_fp = bob_keys.fingerprint().unwrap();
 
         let (mut alice_stream, mut bob_stream) = duplex(4096);
 
-        let alice_handshake = NoiseHandshake::new_initiator(
+        let cache = shared_cache();
+        let alice_handshake = NoiseHandshake::new_initiator_with_cache(
             alice_keys.clone(),
             bob_fp.clone(),
             bob_keys.x25519_public(),
+            cache.clone(),
         )
         .unwrap();
 
-        let bob_handshake = NoiseHandshake::new_responder(bob_keys.clone()).unwrap();
+        let bob_handshake = NoiseHandshake::new_responder_with_cache(
+            bob_keys.clone(),
+            alice_fp.clone(),
+            alice_keys.x25519_public(),
+            cache.clone(),
+        )
+        .unwrap();
 
         let cancel = CancellationToken::new();
 
-        let alice_task = tokio::spawn(run_initiator_handshake(
-            alice_handshake,
-            &mut alice_stream,
-            cancel.clone(),
-        ));
+        let alice_future = run_initiator_handshake(alice_handshake, &mut alice_stream, cancel.clone());
+        let bob_future = run_responder_handshake(bob_handshake, &mut bob_stream, cancel.clone());
 
-        let bob_task = tokio::spawn(run_responder_handshake(
-            bob_handshake,
-            &mut bob_stream,
-            cancel.clone(),
-        ));
-
-        let (alice_result, bob_result) = tokio::join!(alice_task, bob_task);
-
-        let (alice_transport, alice_verified) = alice_result.unwrap().unwrap();
-        let (bob_transport, bob_verified) = bob_result.unwrap().unwrap();
+        let ((alice_transport, alice_verified), (bob_transport, bob_verified)) =
+            tokio::try_join!(alice_future, bob_future).unwrap();
 
         assert!(alice_verified.fingerprint.constant_time_eq(&bob_fp));
         assert!(bob_verified.fingerprint.constant_time_eq(&alice_fp));
 
-        // Test transport encryption roundtrip
-        let plaintext = b"hello from alice";
-        let encrypted = alice_transport.encrypt(plaintext).await.unwrap();
-        let decrypted = bob_transport.decrypt(&encrypted).await.unwrap();
+        // Encryption round-trip (synchronous — no async overhead)
+        let plaintext = b"hello";
+        let encrypted = alice_transport.encrypt(plaintext).unwrap();
+        let decrypted = bob_transport.decrypt(&encrypted).unwrap();
         assert_eq!(plaintext.as_slice(), decrypted.as_slice());
+    }
+
+    #[tokio::test]
+    async fn handshake_wrong_fingerprint_fails() {
+        let alice_keys = Arc::new(IdentityKeys::generate().unwrap());
+        let bob_keys = Arc::new(IdentityKeys::generate().unwrap());
+        let fake_keys = Arc::new(IdentityKeys::generate().unwrap());
+        let fake_fp = fake_keys.fingerprint().unwrap();
+
+        let (mut alice_stream, mut bob_stream) = duplex(4096);
+
+        let cache = shared_cache();
+        let alice_handshake = NoiseHandshake::new_initiator_with_cache(
+            alice_keys.clone(),
+            bob_keys.fingerprint().unwrap(),
+            bob_keys.x25519_public(),
+            cache.clone(),
+        )
+        .unwrap();
+
+        let bob_handshake = NoiseHandshake::new_responder_with_cache(
+            bob_keys.clone(),
+            fake_fp,
+            alice_keys.x25519_public(),
+            cache.clone(),
+        )
+        .unwrap();
+
+        let cancel = CancellationToken::new();
+
+        let alice_future = run_initiator_handshake(alice_handshake, &mut alice_stream, cancel.clone());
+        let bob_future = run_responder_handshake(bob_handshake, &mut bob_stream, cancel.clone());
+
+        let results = tokio::try_join!(alice_future, bob_future);
+        assert!(results.is_err());
+        let err = results.unwrap_err();
+        assert!(matches!(err, SecurityError::FingerprintMismatch));
     }
 
     #[tokio::test]
@@ -450,9 +560,15 @@ mod tests {
         let keys = Arc::new(IdentityKeys::generate().unwrap());
         let fp = keys.fingerprint().unwrap();
 
-        // Create a dummy stream that never sends data
         let (mut stream, _other) = duplex(4096);
-        let handshake = NoiseHandshake::new_initiator(keys.clone(), fp, keys.x25519_public()).unwrap();
+        let cache = shared_cache();
+        let handshake = NoiseHandshake::new_initiator_with_cache(
+            keys.clone(),
+            fp,
+            keys.x25519_public(),
+            cache,
+        )
+        .unwrap();
         let cancel = CancellationToken::new();
 
         let result = run_initiator_handshake(handshake, &mut stream, cancel).await;
@@ -465,11 +581,143 @@ mod tests {
         let fp = keys.fingerprint().unwrap();
 
         let (mut stream, _other) = duplex(4096);
-        let handshake = NoiseHandshake::new_initiator(keys.clone(), fp, keys.x25519_public()).unwrap();
+        let cache = shared_cache();
+        let handshake = NoiseHandshake::new_initiator_with_cache(
+            keys.clone(),
+            fp,
+            keys.x25519_public(),
+            cache,
+        )
+        .unwrap();
         let cancel = CancellationToken::new();
         cancel.cancel();
 
         let result = run_initiator_handshake(handshake, &mut stream, cancel).await;
         assert!(matches!(result, Err(SecurityError::HandshakeCancelled)));
+    }
+
+    #[tokio::test]
+    async fn noise_message_bit_flip_fails() {
+        let alice_keys = Arc::new(IdentityKeys::generate().unwrap());
+        let bob_keys = Arc::new(IdentityKeys::generate().unwrap());
+
+        let (mut alice_stream, mut bob_stream) = duplex(4096);
+
+        let cache = shared_cache();
+        let mut alice = NoiseHandshake::new_initiator_with_cache(
+            alice_keys.clone(),
+            bob_keys.fingerprint().unwrap(),
+            bob_keys.x25519_public(),
+            cache.clone(),
+        )
+        .unwrap();
+
+        let mut bob = NoiseHandshake::new_responder_with_cache(
+            bob_keys.clone(),
+            alice_keys.fingerprint().unwrap(),
+            alice_keys.x25519_public(),
+            cache.clone(),
+        )
+        .unwrap();
+
+        // Alice sends msg1
+        let payload = alice.create_identity_payload().unwrap();
+        let msg1 = alice.write_message(&payload).unwrap();
+        send_message(&mut alice_stream, &msg1).await.unwrap();
+
+        // Bob receives it
+        let received = recv_message(&mut bob_stream).await.unwrap();
+
+        // Corrupt and try to read
+        let mut corrupted = received;
+        if !corrupted.is_empty() {
+            corrupted[0] ^= 0xFF;
+        }
+        let result = bob.read_message(&corrupted);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn oversized_length_prefix_fails() {
+        // Use a Cursor to provide the bad length prefix without blocking.
+        let data = u32::MAX.to_be_bytes().to_vec();
+        let mut cursor = std::io::Cursor::new(data);
+        let result = recv_message(&mut cursor).await;
+        assert!(matches!(result, Err(SecurityError::HandshakeFailed(_))));
+    }
+
+    #[tokio::test]
+    async fn handshake_wrong_x25519_key_fails() {
+        let alice_keys = Arc::new(IdentityKeys::generate().unwrap());
+        let bob_keys = Arc::new(IdentityKeys::generate().unwrap());
+        let charlie_keys = Arc::new(IdentityKeys::generate().unwrap());
+
+        let (mut alice_stream, mut bob_stream) = duplex(4096);
+
+        let cache = shared_cache();
+        let alice_handshake = NoiseHandshake::new_initiator_with_cache(
+            alice_keys.clone(),
+            bob_keys.fingerprint().unwrap(),
+            charlie_keys.x25519_public(), // wrong key
+            cache.clone(),
+        )
+        .unwrap();
+
+        let bob_handshake = NoiseHandshake::new_responder_with_cache(
+            bob_keys.clone(),
+            alice_keys.fingerprint().unwrap(),
+            alice_keys.x25519_public(),
+            cache.clone(),
+        )
+        .unwrap();
+
+        let cancel = CancellationToken::new();
+
+        let alice_future = run_initiator_handshake(alice_handshake, &mut alice_stream, cancel.clone());
+        let bob_future = run_responder_handshake(bob_handshake, &mut bob_stream, cancel.clone());
+
+        let results = tokio::try_join!(alice_future, bob_future);
+        assert!(results.is_err());
+    }
+
+    #[tokio::test]
+    async fn handshake_mid_stream_drop_fails() {
+        let keys = Arc::new(IdentityKeys::generate().unwrap());
+        let fp = keys.fingerprint().unwrap();
+
+        let (mut alice_stream, bob_stream) = duplex(4096);
+        let cache = shared_cache();
+        let handshake = NoiseHandshake::new_initiator_with_cache(
+            keys.clone(),
+            fp,
+            keys.x25519_public(),
+            cache,
+        )
+        .unwrap();
+        let cancel = CancellationToken::new();
+
+        let alice_task = tokio::spawn(async move {
+            run_initiator_handshake(handshake, &mut alice_stream, cancel).await
+        });
+
+        // Let Alice send msg1, then drop the peer's end
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(bob_stream);
+
+        let result = alice_task.await.unwrap();
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn nonce_cache_rejects_duplicate() {
+        let cache = Arc::new(Mutex::new(NonceCache::new(100)));
+        let fp = IdentityKeys::generate().unwrap().fingerprint().unwrap();
+        let nonce = [42u8; 12];
+
+        {
+            let mut c = cache.lock().unwrap();
+            assert!(c.check_and_insert(&fp, &nonce));
+            assert!(!c.check_and_insert(&fp, &nonce));
+        }
     }
 }

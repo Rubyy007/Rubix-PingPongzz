@@ -1,78 +1,107 @@
 //! Secure transport after Noise handshake.
+//!
+//! # Security
+//! - Encryption/decryption errors are deliberately opaque.
+//! - `std::sync::Mutex` serializes access to the non-Sync `SnowTransport`.
+//! - The returned plaintext `Vec<u8>` is **not** automatically zeroized.
+//!   Callers must handle sensitive data appropriately.
+//! - Message size is bounded to prevent unbounded allocation.
 
 use crate::error::{SecurityError, SecurityResult};
 use snow::TransportState as SnowTransport;
-use tokio::sync::Mutex;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tracing::debug;
 
-/// State of a secure transport.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TransportState {
-    Initialized,
-    Encrypting,
-    Decrypting,
-    Closed,
-}
+/// Maximum plaintext message size (1 MiB).
+pub const MAX_TRANSPORT_MSG_SIZE: usize = 1_048_576;
 
-/// Secure transport for encrypted messages.
+/// AEAD authentication tag size for ChaCha20Poly1305.
+const AEAD_TAG_SIZE: usize = 16;
+
+/// Maximum ciphertext frame size (plaintext + AEAD tag).
+pub const MAX_TRANSPORT_FRAME_SIZE: usize = MAX_TRANSPORT_MSG_SIZE + AEAD_TAG_SIZE;
+
+/// Secure transport for encrypted messages, wrapping a completed Noise session.
+///
+/// # Thread Safety
+/// `Transport` is `Clone`, `Send`, and `Sync`. Multiple tasks may hold
+/// clones and call `encrypt`/`decrypt` concurrently; the mutex serializes
+/// access to the underlying `SnowTransport` state machine.
+#[derive(Clone, Debug)]
 pub struct Transport {
     inner: Arc<Mutex<SnowTransport>>,
-    state: Arc<Mutex<TransportState>>,
 }
 
 impl Transport {
     pub(crate) fn new(transport: SnowTransport) -> Self {
         Self {
             inner: Arc::new(Mutex::new(transport)),
-            state: Arc::new(Mutex::new(TransportState::Initialized)),
         }
     }
 
-    /// Encrypt a message (plaintext) into a ciphertext.
-    pub async fn encrypt(&self, plaintext: &[u8]) -> SecurityResult<Vec<u8>> {
-        let mut guard = self.inner.lock().await;
-        let mut output = Vec::new();
-        // Snow's write_message for transport mode expects the plaintext to be encrypted.
-        // Actually, we use `write_message` for transport which encrypts.
-        guard
+    /// Encrypt a plaintext message into a ciphertext frame.
+    ///
+    /// # Errors
+    /// - `SecurityError::MessageTooLarge` if `plaintext` exceeds `MAX_TRANSPORT_MSG_SIZE`.
+    /// - `SecurityError::EncryptionFailed` if the Noise state machine rejects the message.
+    pub fn encrypt(&self, plaintext: &[u8]) -> SecurityResult<Vec<u8>> {
+        if plaintext.len() > MAX_TRANSPORT_MSG_SIZE {
+            return Err(SecurityError::MessageTooLarge {
+                size: plaintext.len(),
+                max: MAX_TRANSPORT_MSG_SIZE,
+            });
+        }
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| SecurityError::Internal("transport state corrupted".into()))?;
+        let mut output = vec![0u8; plaintext.len() + AEAD_TAG_SIZE];
+        let len = guard
             .write_message(plaintext, &mut output)
-            .map_err(|e| SecurityError::EncryptionFailed(format!("encrypt error: {}", e)))?;
-        debug!("Encrypted {} bytes into {} bytes", plaintext.len(), output.len());
+            .map_err(|_| SecurityError::EncryptionFailed)?;
+        output.truncate(len);
+        debug!(in_len = plaintext.len(), out_len = output.len(), "encrypted message");
         Ok(output)
     }
 
-    /// Decrypt a ciphertext into a plaintext.
-    pub async fn decrypt(&self, ciphertext: &[u8]) -> SecurityResult<Vec<u8>> {
-        let mut guard = self.inner.lock().await;
-        let mut output = Vec::new();
-        guard
+    /// Decrypt a ciphertext frame into the original plaintext.
+    ///
+    /// # Security
+    /// The returned `Vec<u8>` contains decrypted plaintext. Callers should
+    /// zeroize sensitive data after use.
+    ///
+    /// # Errors
+    /// - `SecurityError::MessageTooLarge` if `ciphertext` exceeds `MAX_TRANSPORT_FRAME_SIZE`.
+    /// - `SecurityError::DecryptionFailed` if authentication fails or the frame is malformed.
+    pub fn decrypt(&self, ciphertext: &[u8]) -> SecurityResult<Vec<u8>> {
+        if ciphertext.len() > MAX_TRANSPORT_FRAME_SIZE {
+            return Err(SecurityError::MessageTooLarge {
+                size: ciphertext.len(),
+                max: MAX_TRANSPORT_FRAME_SIZE,
+            });
+        }
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| SecurityError::Internal("transport state corrupted".into()))?;
+        let mut output = vec![0u8; ciphertext.len()];
+        let len = guard
             .read_message(ciphertext, &mut output)
-            .map_err(|e| SecurityError::DecryptionFailed(format!("decrypt error: {}", e)))?;
-        debug!("Decrypted {} bytes into {} bytes", ciphertext.len(), output.len());
+            .map_err(|_| SecurityError::DecryptionFailed)?;
+        output.truncate(len);
+        debug!(in_len = ciphertext.len(), out_len = output.len(), "decrypted message");
         Ok(output)
-    }
-
-    /// Get the current state.
-    pub async fn state(&self) -> TransportState {
-        *self.state.lock().await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keys::identity_keys::IdentityKeys;
-    use crate::noise::handshake::NoiseHandshake;
-    use std::sync::Arc;
-    use tokio::test;
 
     #[test]
-    async fn handshake_and_transport() {
-        // We need a full handshake test, but the handshake requires
-        // both sides. We'll create a simple integration test later.
-        // For now, just ensure Transport compiles.
-        // We'll skip actual handshake in unit test because it's complex.
-        // We'll rely on integration tests.
+    fn size_constants_are_sane() {
+        assert_eq!(MAX_TRANSPORT_MSG_SIZE, 1_048_576);
+        assert_eq!(AEAD_TAG_SIZE, 16);
+        assert_eq!(MAX_TRANSPORT_FRAME_SIZE, 1_048_592);
     }
 }

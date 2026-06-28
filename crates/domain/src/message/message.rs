@@ -39,11 +39,16 @@ pub struct Message {
 }
 
 /// Type of message content for UI rendering.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContentType {
+    /// Plain text content.
+    #[default]
     Text,
+    /// Image content.
     Image,
+    /// File or document content.
     File,
+    /// Voice or audio content.
     Voice,
 }
 
@@ -57,6 +62,7 @@ pub struct MessageBuilder {
 }
 
 impl MessageBuilder {
+    /// Create a new message builder with Text as the default content type.
     pub fn new() -> Self {
         Self {
             content_type: ContentType::Text,
@@ -64,31 +70,39 @@ impl MessageBuilder {
         }
     }
 
+    /// Set the sender's fingerprint (cryptographic identity).
     pub fn sender_fingerprint(mut self, fp: Fingerprint) -> Self {
         self.sender_fingerprint = Some(fp);
         self
     }
 
+    /// Add a recipient fingerprint to this message.
     pub fn recipient_fingerprint(mut self, fp: Fingerprint) -> Self {
         self.recipient_fingerprints.push(fp);
         self
     }
 
+    /// Replace all recipients with the provided fingerprints.
     pub fn recipient_fingerprints(mut self, fps: Vec<Fingerprint>) -> Self {
         self.recipient_fingerprints = fps;
         self
     }
 
+    /// Set the message content (encrypted bytes).
     pub fn content(mut self, content: Vec<u8>) -> Self {
         self.content = Some(content);
         self
     }
 
+    /// Set the content type for UI rendering.
     pub fn content_type(mut self, ct: ContentType) -> Self {
         self.content_type = ct;
         self
     }
 
+    /// Validate and construct the Message.
+    ///
+    /// Returns Err if any required field is missing or validation fails.
     pub fn build(self) -> DomainResult<Message> {
         let sender_fingerprint = self.sender_fingerprint.ok_or_else(|| DomainError::Validation {
             field: "sender_fingerprint".into(),
@@ -137,46 +151,57 @@ impl MessageBuilder {
 }
 
 impl Message {
+    /// Create a new MessageBuilder for constructing Message instances.
     pub fn builder() -> MessageBuilder {
         MessageBuilder::new()
     }
 
+    /// Get the message's globally unique identifier.
     pub fn id(&self) -> Uuid {
         self.id
     }
 
+    /// Get the sender's cryptographic fingerprint.
     pub fn sender_fingerprint(&self) -> &Fingerprint {
         &self.sender_fingerprint
     }
 
+    /// Get the list of recipient fingerprints.
     pub fn recipient_fingerprints(&self) -> &[Fingerprint] {
         &self.recipient_fingerprints
     }
 
+    /// Get the encrypted message content.
     pub fn content(&self) -> &[u8] {
         &self.content
     }
 
+    /// Get the content type for UI rendering.
     pub fn content_type(&self) -> ContentType {
         self.content_type
     }
 
+    /// Get the current delivery state of the message.
     pub fn state(&self) -> &MessageState {
         &self.state
     }
 
+    /// Get the timestamp when the message was created.
     pub fn created_at(&self) -> DateTime<Utc> {
         self.created_at
     }
 
+    /// Get the timestamp when the message was sent (if sent).
     pub fn sent_at(&self) -> Option<DateTime<Utc>> {
         self.sent_at
     }
 
+    /// Get the timestamp when the message was delivered (if delivered).
     pub fn delivered_at(&self) -> Option<DateTime<Utc>> {
         self.delivered_at
     }
 
+    /// Get the timestamp when the message was read by the recipient.
     pub fn read_at(&self) -> Option<DateTime<Utc>> {
         self.read_at
     }
@@ -215,7 +240,12 @@ impl Message {
         self.recipient_fingerprints.iter().any(|fp| fp.constant_time_eq(fingerprint))
     }
 
-    /// Mark as sent.
+    /// Mark as sending (transition from Pending to Sending).
+    pub fn mark_sending(&mut self) -> DomainResult<()> {
+        self.transition_state(MessageState::Sending)
+    }
+
+    /// Mark as sent (transition from Sending to Sent).
     pub fn mark_sent(&mut self) -> DomainResult<()> {
         self.transition_state(MessageState::Sent { sent_at: Utc::now() })
     }
@@ -319,6 +349,10 @@ mod tests {
     #[test]
     fn state_transitions_work() {
         let mut msg = valid_message();
+        
+        // Pending -> Sending -> Sent -> Delivered -> Read
+        msg.mark_sending().unwrap();
+        assert!(matches!(msg.state(), MessageState::Sending));
         
         msg.mark_sent().unwrap();
         assert!(msg.state().is_sent());

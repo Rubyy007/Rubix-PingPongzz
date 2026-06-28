@@ -57,7 +57,7 @@ pub use identity::{
 
 // Message (nested: message::message, message::message_state)
 pub use message::{
-    ContentType, Message, MessageBuilder, MAX_RECIPIENTS,
+    ContentType, Message, MessageBuilder,
     MessageState, MessageStateError,
 };
 

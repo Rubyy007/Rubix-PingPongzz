@@ -146,9 +146,16 @@ impl fmt::Display for MessageState {
 /// Errors specific to message state transitions.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MessageStateError {
+    /// Invalid state transition attempted.
     #[error("invalid state transition from {from:?} to {to:?}")]
-    InvalidTransition { from: MessageState, to: MessageState },
-    
+    InvalidTransition {
+        /// The source state.
+        from: MessageState,
+        /// The attempted destination state.
+        to: MessageState,
+    },
+
+    /// Terminal state has been reached and no further transitions are allowed.
     #[error("terminal state reached")]
     TerminalState,
 }

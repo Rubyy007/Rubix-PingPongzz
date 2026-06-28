@@ -13,7 +13,6 @@ use crate::identity::fingerprint::Fingerprint;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Ed25519 public key length.
 pub const ED25519_PUBLIC_KEY_LEN: usize = 32;
@@ -64,25 +63,30 @@ pub struct IdentityBuilder {
 }
 
 impl IdentityBuilder {
+    /// Create a new identity builder with default (empty) state.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Set the user's display name.
     pub fn display_name(mut self, name: impl Into<String>) -> Self {
         self.display_name = Some(name.into());
         self
     }
 
+    /// Set the Ed25519 public key for signing.
     pub fn ed25519_public(mut self, key: [u8; ED25519_PUBLIC_KEY_LEN]) -> Self {
         self.ed25519_public = Some(key);
         self
     }
 
+    /// Set the X25519 public key for Noise key agreement.
     pub fn x25519_public(mut self, key: [u8; X25519_PUBLIC_KEY_LEN]) -> Self {
         self.x25519_public = Some(key);
         self
     }
 
+    /// Set the cryptographic fingerprint (must be derived from keys by caller).
     pub fn fingerprint(mut self, fp: Fingerprint) -> Self {
         self.fingerprint = Some(fp);
         self

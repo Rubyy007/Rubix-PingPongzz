@@ -510,12 +510,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
-name = "base64"
-version = "0.22.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
-
-[[package]]
 name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1137,6 +1131,27 @@ dependencies = [
  "block-buffer",
  "crypto-common",
  "subtle",
+]
+
+[[package]]
+name = "dirs"
+version = "5.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44c45a9d03d6676652bcb5e724c7e988de1acad23a711b5217ab9cbecbec2225"
+dependencies = [
+ "dirs-sys",
+]
+
+[[package]]
+name = "dirs-sys"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "520f05a5cbd335fae5a99ff7a6ab8627577660ee5cfd6a94a6a929b52ff0321c"
+dependencies = [
+ "libc",
+ "option-ext",
+ "redox_users",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -2872,6 +2887,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
+name = "option-ext"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+[[package]]
 name = "orbclient"
 version = "0.3.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3348,6 +3369,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "redox_users"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba009ff324d1fc1b900bd1fdb31564febe58a8ccc8a6fdbb93b543d33b13ca43"
+dependencies = [
+ "getrandom 0.2.17",
+ "libredox",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "regex"
 version = "1.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3386,15 +3418,15 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 name = "rubix-application"
 version = "1.0.0"
 dependencies = [
+ "async-trait",
+ "chrono",
  "rubix-domain",
- "rubix-networking",
- "rubix-persistence",
- "rubix-security",
  "serde",
  "thiserror 1.0.69",
  "tokio",
  "tokio-test",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -3402,25 +3434,31 @@ dependencies = [
 name = "rubix-desktop"
 version = "1.0.0"
 dependencies = [
+ "chrono",
  "eframe",
+ "egui",
  "rubix-application",
  "rubix-domain",
- "rubix-notifications",
  "rubix-ui",
+ "thiserror 1.0.69",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
 name = "rubix-domain"
 version = "1.0.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "hex",
  "pretty_assertions",
  "proptest",
  "serde",
+ "serde_bytes",
+ "serde_json",
  "subtle",
  "thiserror 1.0.69",
  "tokio-test",
@@ -3456,10 +3494,12 @@ dependencies = [
 name = "rubix-notifications"
 version = "1.0.0"
 dependencies = [
+ "chrono",
  "notify-rust",
+ "rubix-application",
  "rubix-domain",
  "thiserror 1.0.69",
- "tokio-test",
+ "tokio",
  "tracing",
 ]
 
@@ -3467,6 +3507,7 @@ dependencies = [
 name = "rubix-persistence"
 version = "1.0.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "r2d2",
  "r2d2_sqlite",
@@ -3485,10 +3526,10 @@ name = "rubix-security"
 version = "1.0.0"
 dependencies = [
  "argon2",
- "base64",
  "blake3",
  "chacha20poly1305",
  "chrono",
+ "dirs",
  "ed25519-dalek",
  "hex",
  "hkdf",
@@ -3498,6 +3539,7 @@ dependencies = [
  "rand 0.8.6",
  "rubix-domain",
  "serde",
+ "serde_json",
  "snow",
  "subtle",
  "tempfile",
@@ -3515,13 +3557,15 @@ dependencies = [
 name = "rubix-ui"
 version = "1.0.0"
 dependencies = [
- "eframe",
+ "chrono",
  "egui",
  "rubix-application",
  "rubix-domain",
+ "serde",
+ "thiserror 1.0.69",
  "tokio",
- "tokio-test",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -3676,6 +3720,16 @@ checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
 dependencies = [
  "serde_core",
  "serde_derive",
+]
+
+[[package]]
+name = "serde_bytes"
+version = "0.11.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
+dependencies = [
+ "serde",
+ "serde_core",
 ]
 
 [[package]]

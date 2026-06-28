@@ -15,8 +15,8 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 /// Length of raw fingerprint bytes.
 pub const FINGERPRINT_BYTES: usize = 20;
 
-/// Length of formatted fingerprint string (40 hex chars + 4 separators).
-pub const FINGERPRINT_STRING_LEN: usize = 44;
+/// Length of formatted fingerprint string (40 hex chars + 9 separators).
+pub const FINGERPRINT_STRING_LEN: usize = 49; // Fixed: 20 bytes * 2 = 40 hex + 9 dashes = 49
 
 /// A fingerprint derived from public key material for human verification.
 /// 
